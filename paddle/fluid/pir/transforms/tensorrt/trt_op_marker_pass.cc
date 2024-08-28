@@ -70,6 +70,18 @@ DEFINE_GENERAL_PATTERN(DepthwiseConv2d, paddle::dialect::DepthwiseConv2dOp)
 DEFINE_GENERAL_PATTERN(Shape, paddle::dialect::ShapeOp)
 DEFINE_GENERAL_PATTERN(Expand, paddle::dialect::ExpandOp)
 DEFINE_GENERAL_PATTERN(Sigmoid, paddle::dialect::SigmoidOp)
+DEFINE_GENERAL_PATTERN(Hardsigmoid, paddle::dialect::HardsigmoidOp)
+DEFINE_GENERAL_PATTERN(Hardswish, paddle::dialect::HardswishOp)
+DEFINE_GENERAL_PATTERN(Tile, paddle::dialect::TileOp)
+DEFINE_GENERAL_PATTERN(Log, paddle::dialect::LogOp)
+DEFINE_GENERAL_PATTERN(Sum, paddle::dialect::SumOp)
+DEFINE_GENERAL_PATTERN(Swish, paddle::dialect::SwishOp)
+DEFINE_GENERAL_PATTERN(Floor, paddle::dialect::FloorOp)
+DEFINE_GENERAL_PATTERN(Sqrt, paddle::dialect::SqrtOp)
+DEFINE_GENERAL_PATTERN(ShareData_, paddle::dialect::ShareData_Op)
+DEFINE_GENERAL_PATTERN(Equal, paddle::dialect::EqualOp)
+DEFINE_GENERAL_PATTERN(NotEqual, paddle::dialect::NotEqualOp)
+DEFINE_GENERAL_PATTERN(Roll, paddle::dialect::RollOp)
 
 #undef DEFINE_GENERAL_PATTERN
 
@@ -1088,6 +1100,192 @@ class RemainderOpPattern
     return true;
   }
 };
+class WhereOpPattern : public pir::OpRewritePattern<paddle::dialect::WhereOp> {
+ public:
+  using pir::OpRewritePattern<paddle::dialect::WhereOp>::OpRewritePattern;
+  bool MatchAndRewrite(paddle::dialect::WhereOp op,
+                       pir::PatternRewriter &rewriter) const override {
+    if (op->HasAttribute(kCanRunTrtAttr) &&
+        op->attribute<pir::BoolAttribute>(kCanRunTrtAttr).data()) {
+      return false;
+    }
+#if IS_TRT_VERSION_LT(8400)
+    VLOG(3) << "where is not supported when TensorRT < 8.4";
+    return false;
+#endif
+    op->set_attribute(kCanRunTrtAttr, rewriter.bool_attr(true));
+    return true;
+  }
+};
+class StackOpPattern : public pir::OpRewritePattern<paddle::dialect::StackOp> {
+ public:
+  using pir::OpRewritePattern<paddle::dialect::StackOp>::OpRewritePattern;
+  bool MatchAndRewrite(paddle::dialect::StackOp op,
+                       pir::PatternRewriter &rewriter) const override {
+    if (op->HasAttribute(kCanRunTrtAttr) &&
+        op->attribute<pir::BoolAttribute>(kCanRunTrtAttr).data()) {
+      return false;
+    }
+    if (!op->HasAttribute("axis")) {
+      VLOG(3) << "stack op must has axis attributes";
+      return false;
+    }
+    int axis = op->attribute<pir::Int32Attribute>("axis").data();
+    auto x_shape = op.operand_source(0).type().dyn_cast<pir::VectorType>();
+    int rank = x_shape.size();
+    if (axis > rank || axis < -(rank + 1)) {
+      VLOG(3) << "axis > rank or axis < -(rank + 1)";
+      return false;
+    }
+    op->set_attribute(kCanRunTrtAttr, rewriter.bool_attr(true));
+    return true;
+  }
+};
+class TopkOpPattern : public pir::OpRewritePattern<paddle::dialect::TopkOp> {
+ public:
+  using pir::OpRewritePattern<paddle::dialect::TopkOp>::OpRewritePattern;
+  bool MatchAndRewrite(paddle::dialect::TopkOp op,
+                       pir::PatternRewriter &rewriter) const override {
+    if (op->HasAttribute(kCanRunTrtAttr) &&
+        op->attribute<pir::BoolAttribute>(kCanRunTrtAttr).data()) {
+      return false;
+    }
+    if (!op->HasAttribute("sorted")) {
+      VLOG(3) << "topk op must has saxis attributes";
+      return false;
+    }
+    bool sorted = op->attribute<pir::BoolAttribute>("sorted").data();
+    if (!sorted) {
+      VLOG(3) << "topk does not support results not sorted in tensorrt";
+      return false;
+    }
+    op->set_attribute(kCanRunTrtAttr, rewriter.bool_attr(true));
+    return true;
+  }
+};
+class GreaterThanOpPattern
+    : public pir::OpRewritePattern<paddle::dialect::GreaterThanOp> {
+ public:
+  using pir::OpRewritePattern<paddle::dialect::GreaterThanOp>::OpRewritePattern;
+  bool MatchAndRewrite(paddle::dialect::GreaterThanOp op,
+                       pir::PatternRewriter &rewriter) const override {
+    if (op->HasAttribute(kCanRunTrtAttr) &&
+        op->attribute<pir::BoolAttribute>(kCanRunTrtAttr).data()) {
+      return false;
+    }
+#if IS_TRT_VERSION_LT(8400)
+    VLOG(3) << "GreaterThanOp is not supported when TensorRT < 8.4";
+    return false;
+#else
+    pir::Value x = op.operand_source(0);
+    pir::Value y = op.operand_source(1);
+    auto x_dtype = pir::GetDataTypeFromValue(x);
+    auto y_dtype = pir::GetDataTypeFromValue(y);
+    if (x_dtype.isa<pir::BoolType>() || y_dtype.isa<pir::BoolType>()) {
+      VLOG(3) << "Greate_than op do not support bool datatype";
+      return false;
+    }
+#endif
+    op->set_attribute(kCanRunTrtAttr, rewriter.bool_attr(true));
+    return true;
+  }
+};
+class SetValueOpPattern
+    : public pir::OpRewritePattern<paddle::dialect::SetValueOp> {
+ public:
+  using pir::OpRewritePattern<paddle::dialect::SetValueOp>::OpRewritePattern;
+  bool MatchAndRewrite(paddle::dialect::SetValueOp op,
+                       pir::PatternRewriter &rewriter) const override {
+    if (op->HasAttribute(kCanRunTrtAttr) &&
+        op->attribute<pir::BoolAttribute>(kCanRunTrtAttr).data()) {
+      return false;
+    }
+#if IS_TRT_VERSION_LT(8200)
+    VLOG(3) << "SetValueOp is not supported when TensorRT < 8.2";
+    return false;
+#endif
+    if (!op->HasAttribute("axes")) {
+      VLOG(3) << "set_value op must has axes attributes";
+      return false;
+    }
+    op->set_attribute(kCanRunTrtAttr, rewriter.bool_attr(true));
+    return true;
+  }
+};
+class StridedSliceOpPattern
+    : public pir::OpRewritePattern<paddle::dialect::StridedSliceOp> {
+ public:
+  using pir::OpRewritePattern<
+      paddle::dialect::StridedSliceOp>::OpRewritePattern;
+  bool MatchAndRewrite(paddle::dialect::StridedSliceOp op,
+                       pir::PatternRewriter &rewriter) const override {
+    if (op->HasAttribute(kCanRunTrtAttr) &&
+        op->attribute<pir::BoolAttribute>(kCanRunTrtAttr).data()) {
+      return false;
+    }
+    if (!op->HasAttribute("axes")) {
+      VLOG(3) << "strided_slice op must has axes attributes";
+      return false;
+    }
+    op->set_attribute(kCanRunTrtAttr, rewriter.bool_attr(true));
+    return true;
+  }
+};
+class ClipOpPattern : public pir::OpRewritePattern<paddle::dialect::ClipOp> {
+ public:
+  using pir::OpRewritePattern<paddle::dialect::ClipOp>::OpRewritePattern;
+  bool MatchAndRewrite(paddle::dialect::ClipOp op,
+                       pir::PatternRewriter &rewriter) const override {
+    if (op->HasAttribute(kCanRunTrtAttr) &&
+        op->attribute<pir::BoolAttribute>(kCanRunTrtAttr).data()) {
+      return false;
+    }
+    pir::Value input = op.operand_source(0);
+    auto input_type = input.type().dyn_cast<paddle::dialect::DenseTensorType>();
+    auto input_shape = input_type.dims();
+    if (input_shape.size() == 0) {
+      VLOG(3) << "clip"
+              << " op does not support input's dim is 0 in tensorrt.";
+    }
+    op->set_attribute(kCanRunTrtAttr, rewriter.bool_attr(true));
+    return true;
+  }
+};
+class GridSampleOpPattern
+    : public pir::OpRewritePattern<paddle::dialect::GridSampleOp> {
+ public:
+  using pir::OpRewritePattern<paddle::dialect::GridSampleOp>::OpRewritePattern;
+  bool MatchAndRewrite(paddle::dialect::GridSampleOp op,
+                       pir::PatternRewriter &rewriter) const override {
+    if (op->HasAttribute(kCanRunTrtAttr) &&
+        op->attribute<pir::BoolAttribute>(kCanRunTrtAttr).data()) {
+      return false;
+    }
+#if !IS_TRT_VERSION_GE(8510)
+    VLOG(3) << "grid_sampler is not supported when TensorRT < 8.5.1";
+    return false;
+#endif
+    if (!op->HasAttribute("mode") || !op->HasAttribute("padding_mode") ||
+        !op->HasAttribute("align_corners")) {
+      VLOG(3) << "grid_sampler need attributes : mode, padding_mode, "
+                 "align_corners";
+      return false;
+    }
+    pir::Value input = op.operand_source(0);
+    auto input_type = input.type().dyn_cast<paddle::dialect::DenseTensorType>();
+    auto input_shape = input_type.dims();
+    pir::Value grid = op.operand_source(1);
+    auto grid_type = grid.type().dyn_cast<paddle::dialect::DenseTensorType>();
+    auto grid_shape = grid_type.dims();
+    if (input_shape.size() != 4 || grid_shape.size() != 4) {
+      VLOG(3) << "The input and grid tensors must be shape tensors of rank 4 "
+                 "using TRT GridSample layer.";
+      return false;
+    }
+    op->set_attribute(kCanRunTrtAttr, rewriter.bool_attr(true));
+    return true;
+  }
+};
 class TrtOpMarkerPass : public pir::PatternRewritePass {
  public:
   TrtOpMarkerPass() : pir::PatternRewritePass("trt_op_marker_pass", 2) {}
@@ -1120,6 +1318,18 @@ class TrtOpMarkerPass : public pir::PatternRewritePass {
     ADD_PATTERN(Shape)
     ADD_PATTERN(Expand)
     ADD_PATTERN(Sigmoid)
+    ADD_PATTERN(Hardsigmoid)
+    ADD_PATTERN(Hardswish)
+    ADD_PATTERN(Tile)
+    ADD_PATTERN(Log)
+    ADD_PATTERN(Sum)
+    ADD_PATTERN(Swish)
+    ADD_PATTERN(Floor)
+    ADD_PATTERN(Sqrt)
+    ADD_PATTERN(ShareData_)
+    ADD_PATTERN(NotEqual)
+    ADD_PATTERN(Equal)
+    ADD_PATTERN(Roll)
 
 #undef ADD_PATTERN
     ps.Add(std::make_unique<Pool2dOpPattern>(context));
@@ -1152,6 +1362,13 @@ class TrtOpMarkerPass : public pir::PatternRewritePass {
     ps.Add(std::make_unique<MaximumOpPattern>(context));
     ps.Add(std::make_unique<FloorDivideOpPattern>(context));
     ps.Add(std::make_unique<RemainderOpPattern>(context));
+    ps.Add(std::make_unique<WhereOpPattern>(context));
+    ps.Add(std::make_unique<StackOpPattern>(context));
+    ps.Add(std::make_unique<TopkOpPattern>(context));
+    ps.Add(std::make_unique<GreaterThanOpPattern>(context));
+    ps.Add(std::make_unique<StridedSliceOpPattern>(context));
+    ps.Add(std::make_unique<ClipOpPattern>(context));
+    ps.Add(std::make_unique<GridSampleOpPattern>(context));
     return ps;
   }
 };
